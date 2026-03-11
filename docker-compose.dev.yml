@@ -1,0 +1,66 @@
+# ════════════════════════════════════════════════════════════
+#  FileForge – Development Override
+#  Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+#  Differences from production:
+#  - Hot-reload for backend and worker
+#  - Debug logging
+#  - Flower UI for Celery monitoring
+#  - MailHog for email testing
+# ════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+
+  backend:
+    volumes:
+      - ./backend:/app/backend
+      - ./worker:/app/worker
+    command: >
+      uvicorn backend.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app/backend
+      --reload-dir /app/worker
+    environment:
+      - DEBUG=1
+      - LOG_LEVEL=debug
+
+  worker:
+    volumes:
+      - ./backend:/app/backend
+      - ./worker:/app/worker
+    command: >
+      celery -A worker.celery_worker worker
+      --loglevel=debug
+      --concurrency=2
+      --queues=pdf,image,ai,default
+      --hostname=dev-worker@%h
+    environment:
+      - DEBUG=1
+
+  # ── Flower – Celery monitoring UI ─────────────────────────
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: app
+    container_name: fileforge_flower
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - worker
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - fileforge_net
+    ports:
+      - "5555:5555"
+    command: >
+      celery -A worker.celery_worker flower
+      --port=5555
+      --broker=redis://redis:6379/0
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-fileforge}

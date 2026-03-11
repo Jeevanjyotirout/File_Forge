@@ -1,0 +1,85 @@
+# ════════════════════════════════════════════════════════════
+#  FileForge Backend — Multi-stage Dockerfile
+#  Serves both:
+#    - FastAPI API  (CMD: uvicorn)
+#    - Celery Worker (CMD override in docker-compose)
+# ════════════════════════════════════════════════════════════
+
+# ── Stage 1: Base system packages ────────────────────────────
+FROM python:3.11
+
+WORKDIR /app
+
+COPY backend/ .
+
+RUN pip install -r requirements.txt
+
+CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]
+
+FROM python:3.12-slim AS base
+
+LABEL org.opencontainers.image.title="FileForge Backend"
+LABEL org.opencontainers.image.description="FastAPI + Celery file processing"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # LibreOffice for Word→PDF conversion
+    libreoffice \
+    # Tesseract OCR engine + English language pack
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-fra \
+    tesseract-ocr-deu \
+    # Image support
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    # Utilities
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# ── Stage 2: Python dependencies ─────────────────────────────
+FROM base AS deps
+
+WORKDIR /app
+
+COPY backend/requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+
+# ── Stage 3: Application ──────────────────────────────────────
+FROM deps AS app
+
+WORKDIR /app
+
+# Copy application source
+COPY backend/  ./backend/
+COPY worker/   ./worker/
+
+# Create storage directories with correct ownership
+RUN mkdir -p storage/temp storage/output && \
+    chmod 777 storage/temp storage/output
+
+# Non-root user for security
+RUN groupadd -r fileforge && useradd -r -g fileforge -d /app -s /bin/bash fileforge
+RUN chown -R fileforge:fileforge /app
+USER fileforge
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Default command: FastAPI server
+# Workers override this in docker-compose.yml
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

@@ -1,0 +1,4 @@
+# This directory stores processed output files available for download.
+# Files are automatically deleted after FILE_TTL_SECONDS (default: 1 hour).
+# This file exists only to ensure the directory is tracked by git.
+# Keeps outputs directory tracked by Git

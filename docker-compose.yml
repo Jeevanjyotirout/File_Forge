@@ -1,0 +1,242 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  FileForge – Docker Compose
+#
+#  Services:
+#    redis     – Message broker & Celery result backend
+#    backend   – FastAPI REST API
+#    worker    – Celery worker (PDF/Image/AI tasks)
+#    beat      – Celery Beat scheduler (cleanup cron)
+#    frontend  – React SPA served via Nginx
+#
+#  Usage:
+#    docker-compose up --build          # Start all services
+#    docker-compose up -d               # Start detached
+#    docker-compose logs -f worker      # Follow worker logs
+#    docker-compose scale worker=3      # Scale workers
+# ════════════════════════════════════════════════════════════════════════════
+
+version: "3"
+
+services:
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/storage
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "5173:5173"
+
+  redis:
+    image: redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    depends_on:
+      - redis
+
+  nginx:
+    image: nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - "80:80"
+      
+version: "3.9"
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  redis_data:
+    driver: local
+  storage_temp:
+    driver: local
+  storage_output:
+    driver: local
+
+# ── Shared network ────────────────────────────────────────────────────────────
+networks:
+  fileforge_net:
+    driver: bridge
+
+# ── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ────────────────────────────────────────────────────────────
+  #  REDIS  –  broker + result backend
+  # ────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: fileforge_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --appendonly yes
+      --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - fileforge_net
+    ports:
+      - "6379:6379"   # Remove in production
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+
+  # ────────────────────────────────────────────────────────────
+  #  BACKEND  –  FastAPI REST API
+  # ────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: app
+    container_name: fileforge_backend
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_RESULT_URL=redis://redis:6379/1
+      - TEMP_DIR=/app/storage/temp
+      - OUTPUT_DIR=/app/storage/output
+    volumes:
+      - storage_temp:/app/storage/temp
+      - storage_output:/app/storage/output
+      # Hot-reload in dev: mount source
+      # - ./backend:/app/backend
+      # - ./worker:/app/worker
+    networks:
+      - fileforge_net
+    ports:
+      - "8000:8000"   # Remove in production (route via nginx)
+    command: >
+      uvicorn backend.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --loop uvloop
+      --http h11
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+
+  # ────────────────────────────────────────────────────────────
+  #  WORKER  –  Celery async task processor
+  # ────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: app
+    container_name: fileforge_worker
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_RESULT_URL=redis://redis:6379/1
+      - TEMP_DIR=/app/storage/temp
+      - OUTPUT_DIR=/app/storage/output
+    volumes:
+      - storage_temp:/app/storage/temp
+      - storage_output:/app/storage/output
+    networks:
+      - fileforge_net
+    command: >
+      celery -A worker.celery_worker worker
+      --loglevel=info
+      --concurrency=4
+      --queues=pdf,image,ai,default
+      --hostname=worker@%h
+      --max-tasks-per-child=200
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "celery", "-A", "worker.celery_worker", "inspect", "ping", "--timeout", "5"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+
+
+  # ────────────────────────────────────────────────────────────
+  #  BEAT  –  Celery Beat scheduler (cron jobs)
+  # ────────────────────────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: app
+    container_name: fileforge_beat
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_RESULT_URL=redis://redis:6379/1
+      - TEMP_DIR=/app/storage/temp
+      - OUTPUT_DIR=/app/storage/output
+    volumes:
+      - storage_temp:/app/storage/temp
+      - storage_output:/app/storage/output
+    networks:
+      - fileforge_net
+    command: >
+      celery -A worker.celery_worker beat
+      --loglevel=info
+      --scheduler celery.beat:PersistentScheduler
+
+
+  # ────────────────────────────────────────────────────────────
+  #  FRONTEND  –  React SPA via Nginx
+  # ────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: production
+    container_name: fileforge_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - fileforge_net
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

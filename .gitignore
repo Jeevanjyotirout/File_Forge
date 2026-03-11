@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment
+.env
+*.local
+
+# Storage (never commit user files)
+storage/temp/*
+storage/output/*
+!storage/temp/.gitkeep
+!storage/output/.gitkeep
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+frontend/.vite/
+
+# Docker
+.docker/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+venv
+__pycache__
+node_modules
+.env
+uploads
+outputs
+temp
+__pycache__/
+*.pyc
+__pycache__/
+*.pyc
+__pycache__/
+__pycache__/
+*.pyc
+venv/
+.env
+node_modules/
+
+storage/uploads/*
+storage/outputs/*
+storage/temp/*
+
+!storage/uploads/.gitkeep
+!storage/outputs/.gitkeep
+!storage/temp/.gitkeep
